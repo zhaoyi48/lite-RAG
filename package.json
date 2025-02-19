@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@llm-tools/embedjs": "^0.1.28",
+    "pdfjs-dist": "^4.10.38",
     "vue": "^3.5.13"
   },
   "devDependencies": {

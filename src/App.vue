@@ -20,10 +20,10 @@
         <!-- 上传文件部分 -->
         <div class="upload-block">
           <h3>文件上传</h3>
-          <div class="upload-section">
-            <input type="file" @change="handleFileUpload" multiple accept=".txt,.md">
+    <div class="upload-section">
+            <input type="file" @change="handleFileUpload" multiple accept=".txt,.md,.pdf">
             <div class="supported-formats">
-              支持的格式：TXT, MD
+              支持的格式：TXT, MD, PDF
             </div>
             <div class="upload-status" v-if="uploadStatus.isUploading">
               <div class="progress-bar">
@@ -41,12 +41,12 @@
               {{ uploadStatus.isUploading ? '处理中...' : '上传文件' }}
             </button>
           </div>
-        </div>
+    </div>
 
         <!-- 搜索部分 -->
         <div class="search-block">
           <h3>知识库搜索</h3>
-          <div class="search-section">
+    <div class="search-section">
             <div class="search-input-wrapper">
               <input 
                 type="text" 
@@ -54,13 +54,13 @@
                 placeholder="输入搜索关键词"
                 @keyup.enter="searchDocuments"
               >
-              <button @click="searchDocuments">搜索</button>
-            </div>
-            <div class="results-section">
-              <div v-for="(result, index) in searchResults" :key="index" class="result-item">
+      <button @click="searchDocuments">搜索</button>
+    </div>
+    <div class="results-section">
+      <div v-for="(result, index) in searchResults" :key="index" class="result-item">
                 <h4>{{ result.title }}</h4>
-                <p>{{ result.content }}</p>
-                <p class="similarity">相似度: {{ result.similarity }}</p>
+        <p>{{ result.content }}</p>
+        <p class="similarity">相似度: {{ result.similarity }}</p>
               </div>
             </div>
           </div>
@@ -149,6 +149,14 @@
 </template>
 
 <script>
+import * as pdfjsLib from 'pdfjs-dist'
+
+// 设置 PDF.js worker
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+  'pdfjs-dist/build/pdf.worker.mjs',
+  import.meta.url,
+).href
+
 export default {
   name: 'KnowledgeBase',
   data() {
@@ -179,6 +187,7 @@ export default {
       supportedFormats: {
         'text/plain': '.txt',
         'text/markdown': '.md',
+        'application/pdf': '.pdf'
       },
       uploadStatus: {
         isUploading: false,
@@ -211,6 +220,11 @@ export default {
             h3: 1000,
             h4: 800
           }
+        },
+        pdf: {
+          maxSize: 1000,
+          minSize: 100,
+          overlap: 200
         }
       }
     }
@@ -311,18 +325,29 @@ export default {
 
           this.uploadStatus.currentFile = file.name
           
-          const reader = new FileReader()
-          reader.onload = async (e) => {
-            const content = e.target.result
-            let chunks = []
-            
-            // 根据文件类型处理内容
+          try {
+            let content = ''
             const extension = file.name.toLowerCase().slice(file.name.lastIndexOf('.'))
-            if (extension === '.md') {
-              // 直接使用 splitMarkdownContent 处理 Markdown 文件
-              chunks = this.splitMarkdownContent(content, file.name, this.chunkConfig.md)
+
+            // 根据文件类型选择处理方法
+            if (extension === '.pdf') {
+              content = await this.processPdfFile(file)
             } else {
-              chunks = this.splitIntoChunks(content, file.name)
+          const reader = new FileReader()
+              content = await new Promise((resolve, reject) => {
+                reader.onload = e => resolve(e.target.result)
+                reader.onerror = reject
+                reader.readAsText(file)
+              })
+            }
+
+            let chunks = []
+            if (extension === '.md') {
+              chunks = this.splitMarkdownContent(content, file.name, this.chunkConfig.md)
+            } else if (extension === '.pdf') {
+              chunks = this.splitTextContent(content, file.name, this.chunkConfig.pdf)
+            } else {
+              chunks = this.splitTextContent(content, file.name, this.chunkConfig.txt)
             }
 
             this.uploadStatus.totalChunks = chunks.length
@@ -331,10 +356,10 @@ export default {
             for (const chunk of chunks) {
               this.uploadStatus.currentChunk++
               const vector = await this.getEmbedding(chunk.content, this.indexModel)
-              this.vectors.push({
+            this.vectors.push({
                 ...chunk,
-                vector: vector
-              })
+              vector: vector
+            })
 
               // 更新进度
               this.uploadStatus.progress = Math.round(
@@ -344,17 +369,21 @@ export default {
             }
 
             this.uploadStatus.processedFiles++
-            
-            if (this.uploadStatus.processedFiles === totalFiles) {
-              let message = `处理完成！\n共处理 ${totalFiles - invalidFiles.length} 个文件，生成 ${this.vectors.length} 个文本片段`
-              if (invalidFiles.length > 0) {
-                message += `\n以下文件格式不支持：\n${invalidFiles.join('\n')}`
-              }
-              this.showToast(message, 'success', 5000)
-              this.uploadStatus.isUploading = false
-            }
+          } catch (error) {
+            console.error(`处理文件 ${file.name} 时出错:`, error)
+            invalidFiles.push(file.name)
+            this.uploadStatus.processedFiles++
+            continue
           }
-          reader.readAsText(file)
+        }
+
+        if (this.uploadStatus.processedFiles === totalFiles) {
+          let message = `处理完成！\n共处理 ${totalFiles - invalidFiles.length} 个文件，生成 ${this.vectors.length} 个文本片段`
+          if (invalidFiles.length > 0) {
+            message += `\n以下文件处理失败：\n${invalidFiles.join('\n')}`
+          }
+          this.showToast(message, invalidFiles.length > 0 ? 'error' : 'success', 5000)
+          this.uploadStatus.isUploading = false
         }
       } catch (error) {
         console.error('文件处理错误:', error)
@@ -501,7 +530,7 @@ export default {
     async searchDocuments() {
       try {
         if (!this.searchQuery) return
-
+        
         const results = await this.getHybridSearchResults(this.searchQuery, this.vectors)
         
         this.searchResults = results
@@ -925,9 +954,9 @@ ${context}
       return result.trim()
     },
 
-    // 添加文件类型检查方法
+    // 修改文件类型检查
     isValidFileType(file) {
-      const validExtensions = ['.txt', '.md']
+      const validExtensions = ['.txt', '.md', '.pdf']
       const extension = file.name.toLowerCase().slice(file.name.lastIndexOf('.'))
       return validExtensions.includes(extension)
     },
@@ -1043,6 +1072,71 @@ ${context}
     // 添加文件展开状态检查方法
     isFileExpanded(fileName) {
       return this.expandedFiles.get(fileName) || false
+    },
+
+    // 优化 PDF 处理方法
+    async processPdfFile(file) {
+      try {
+        // 创建文件的 ArrayBuffer
+        const arrayBuffer = await file.arrayBuffer()
+        
+        // 加载 PDF 文档
+        const loadingTask = pdfjsLib.getDocument({
+          data: arrayBuffer,
+          cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@latest/cmaps/',
+          cMapPacked: true,
+        })
+        
+        const pdf = await loadingTask.promise
+        let fullText = ''
+        
+        // 显示处理进度
+        this.uploadStatus.totalChunks = pdf.numPages
+        this.uploadStatus.currentChunk = 0
+
+        // 处理每一页
+        for (let i = 1; i <= pdf.numPages; i++) {
+          this.uploadStatus.currentChunk = i
+          const page = await pdf.getPage(i)
+          const textContent = await page.getTextContent()
+          
+          // 优化文本提取
+          const pageText = textContent.items
+            .map(item => {
+              // 处理特殊字符和空格
+              return item.str.replace(/\s+/g, ' ')
+            })
+            .join(' ')
+            .trim()
+
+          if (pageText) {
+            // 添加页码标记和内容
+            fullText += (fullText ? '\n\n' : '') + 
+                       `[Page ${i}]\n` + 
+                       pageText
+          }
+
+          // 更新进度
+          this.uploadStatus.progress = Math.round(
+            (i * 100) / pdf.numPages
+          )
+        }
+
+        // 如果没有提取到文本，抛出错误
+        if (!fullText.trim()) {
+          throw new Error('未能从PDF中提取到文本内容')
+        }
+
+        return fullText
+      } catch (error) {
+        console.error('PDF 处理错误:', error)
+        // 提供更详细的错误信息
+        throw new Error(
+          error.message === 'Failed to fetch dynamically imported module' 
+            ? 'PDF处理组件加载失败，请检查网络连接'
+            : `PDF文件处理失败: ${error.message}`
+        )
+      }
     }
   }
 }
