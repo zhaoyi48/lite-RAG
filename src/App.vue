@@ -1,48 +1,106 @@
 <template>
   <div class="knowledge-base">
-    <div class="upload-section">
-      <input type="file" @change="handleFileUpload" multiple accept=".txt,.pdf,.doc,.docx">
-      <button @click="uploadFiles">上传文件</button>
-    </div>
-
-    <div class="search-section">
-      <input type="text" v-model="searchQuery" placeholder="输入搜索关键词">
-      <button @click="searchDocuments">搜索</button>
-    </div>
-
-    <div class="results-section">
-      <div v-for="(result, index) in searchResults" :key="index" class="result-item">
-        <h3>{{ result.title }}</h3>
-        <p>{{ result.content }}</p>
-        <p class="similarity">相似度: {{ result.similarity }}</p>
+    <div class="settings-section">
+      <div class="setting-item">
+        <label>Ollama 服务地址：</label>
+        <input 
+          type="text" 
+          v-model="ollamaEndpoint"
+          placeholder="例如：http://127.0.0.1:11434"
+        >
+        <button @click="testConnection">测试连接</button>
       </div>
     </div>
 
-    <div class="chat-section">
-      <div class="model-selector">
-        <select v-model="selectedModel">
-          <option v-for="model in availableModels" 
-                  :key="model.id" 
-                  :value="model.id">
-            {{ model.name }}
-          </option>
-        </select>
-      </div>
-      
-      <div class="chat-messages" ref="chatMessages">
-        <div v-for="(message, index) in chatHistory" 
-             :key="index" 
-             :class="['message', message.role]">
-          <p>{{ message.content }}</p>
+    <div class="main-content">
+      <!-- 左侧知识库部分 -->
+      <div class="knowledge-section">
+        <h2>知识库管理</h2>
+        <div class="upload-section">
+          <input type="file" @change="handleFileUpload" multiple accept=".txt,.md">
+          <div class="supported-formats">
+            支持的格式：TXT, MD
+          </div>
+          <button @click="uploadFiles">上传文件</button>
+        </div>
+
+        <!-- 添加知识库统计信息 -->
+        <div class="kb-stats" v-if="vectors.length > 0">
+          <h3>知识库统计</h3>
+          <div class="stats-info">
+            <p>总文件数：{{ fileStats.totalFiles }}</p>
+            <p>总片段数：{{ fileStats.totalChunks }}</p>
+            <p>向量维数：{{ fileStats.vectorDimension }}</p>
+          </div>
+        </div>
+
+        <!-- 添加文件片段列表 -->
+        <div class="file-chunks">
+          <div v-for="(chunks, fileName) in groupedChunks" :key="fileName" class="file-group">
+            <div class="file-header" @click="toggleFileExpand(fileName)">
+              <span class="file-name">{{ fileName }}</span>
+              <span class="chunk-count">({{ chunks.length }} 个片段)</span>
+              <span class="expand-icon">{{ isFileExpanded(fileName) ? '▼' : '▶' }}</span>
+            </div>
+            <div v-if="isFileExpanded(fileName)" class="chunk-list">
+              <div v-for="chunk in chunks" :key="chunk.source" class="chunk-item">
+                <div class="chunk-header">
+                  <span>{{ chunk.source }}</span>
+                  <span class="file-type">{{ chunk.fileType.toUpperCase() }}</span>
+                  <span class="chunk-length">({{ chunk.content.length }} 字符)</span>
+                </div>
+                <p class="chunk-preview">{{ getChunkPreview(chunk) }}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="search-section">
+          <input type="text" v-model="searchQuery" placeholder="输入搜索关键词">
+          <button @click="searchDocuments">搜索</button>
+        </div>
+
+        <div class="results-section">
+          <div v-for="(result, index) in searchResults" :key="index" class="result-item">
+            <h3>{{ result.title }}</h3>
+            <p>{{ result.content }}</p>
+            <p class="similarity">相似度: {{ result.similarity }}</p>
+          </div>
         </div>
       </div>
-      
-      <div class="chat-input">
-        <input type="text" 
-               v-model="chatInput" 
-               @keyup.enter="sendMessage"
-               placeholder="输入消息与AI对话">
-        <button @click="sendMessage">发送</button>
+
+      <!-- 右侧聊天部分 -->
+      <div class="chat-section">
+        <h2>智能问答</h2>
+        <div class="model-selector">
+          <select v-model="selectedModel">
+            <option v-for="model in availableModels" 
+                    :key="model.id" 
+                    :value="model.id">
+              {{ model.name }}
+            </option>
+          </select>
+        </div>
+        
+        <div class="chat-messages" ref="chatMessages">
+          <div v-for="(message, index) in chatHistory" 
+               :key="index" 
+               :class="['message', message.role]">
+            <p v-if="message.role === 'user'">{{ message.content }}</p>
+            <p v-else v-html="message.content"></p>
+          </div>
+          <div v-if="isStreaming" class="message assistant">
+            <p v-html="currentStreamMessage"></p>
+          </div>
+        </div>
+        
+        <div class="chat-input">
+          <input type="text" 
+                 v-model="chatInput" 
+                 @keyup.enter="sendMessage"
+                 placeholder="输入消息与AI对话">
+          <button @click="sendMessage">发送</button>
+        </div>
       </div>
     </div>
   </div>
@@ -57,7 +115,7 @@ export default {
       searchResults: [],
       files: [],
       vectors: [], // 存储向量化后的文档
-      ollamaEndpoint: 'http://127.0.0.1:11434', // Ollama默认端点
+      ollamaEndpoint: localStorage.getItem('ollamaEndpoint') || 'http://127.0.0.1:11434',
       chatInput: '',
       chatHistory: [],
       isProcessing: false,
@@ -65,11 +123,58 @@ export default {
       availableModels: [
         { id: 'llama3.2', name: 'llama3.2' }
       ],
+      currentStreamMessage: '',
+      isStreaming: false,
+      indexModel: 'nomic-embed-text',  // 添加索引模型配置
+      chunkSize: 1000,  // 增加块大小以保持更多上下文
+      overlapSize: 200,  // 增加重叠区域以保持连贯性
+      minChunkSize: 100,  // 最小块大小
+      connectionStatus: '',
+      keywordWeight: 0.3,    // 关键词匹配权重
+      vectorWeight: 0.7,     // 向量相似度权重
+      minKeywordScore: 0.1,  // 最小关键词匹配分数
+      expandedFiles: new Map(), // 使用 Map 替代普通对象
+      supportedFormats: {
+        'text/plain': '.txt',
+        'text/markdown': '.md',
+      },
+    }
+  },
+  computed: {
+    // 按文件名分组的片段
+    groupedChunks() {
+      const groups = {}
+      this.vectors.forEach(vec => {
+        const fileName = vec.title
+        if (!groups[fileName]) {
+          groups[fileName] = []
+        }
+        groups[fileName].push(vec)
+      })
+      return groups
+    },
+    // 知识库统计信息
+    fileStats() {
+      const uniqueFiles = new Set(this.vectors.map(v => v.title))
+      return {
+        totalFiles: uniqueFiles.size,
+        totalChunks: this.vectors.length,
+        vectorDimension: this.vectors[0]?.vector?.length || 0
+      }
+    },
+    // 修改模板中的判断逻辑
+    isFileExpanded() {
+      return (fileName) => this.expandedFiles.get(fileName) || false
+    }
+  },
+  watch: {
+    ollamaEndpoint(newValue) {
+      localStorage.setItem('ollamaEndpoint', newValue)
     }
   },
   methods: {
     // 使用Ollama进行文本向量化
-    async getEmbedding(text) {
+    async getEmbedding(text, model = this.indexModel) {
       try {
         const response = await fetch(`${this.ollamaEndpoint}/api/embeddings`, {
           method: 'POST',
@@ -77,7 +182,7 @@ export default {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            model: 'nomic-embed-text', // 使用llama2模型，可以根据需要更换
+            model: model,
             prompt: text
           })
         })
@@ -101,51 +206,363 @@ export default {
       this.files = event.target.files
     },
 
+    // 优化文本分段处理
+    splitIntoChunks(text, filename) {
+      // 预处理文本，移除多余空白
+      text = text.replace(/\s+/g, ' ').trim()
+      
+      // 首先按自然段落分割
+      const paragraphs = text.split(/(?<=\.|\!|\?)\s+/)
+      const chunks = []
+      let currentChunk = {
+        title: filename,
+        content: '',
+        source: '',
+        length: 0
+      }
+
+      for (let i = 0; i < paragraphs.length; i++) {
+        const paragraph = paragraphs[i].trim()
+        if (!paragraph) continue
+
+        // 检查是否是标题行（通过特征判断）
+        const isTitle = this.isLikelyTitle(paragraph)
+        
+        // 如果当前段落很短且看起来像标题，将其与下一段组合
+        if (isTitle && i < paragraphs.length - 1) {
+          const nextParagraph = paragraphs[i + 1].trim()
+          const combined = paragraph + '\n' + nextParagraph
+          if (combined.length <= this.chunkSize) {
+            paragraphs[i] = combined
+            paragraphs.splice(i + 1, 1)
+          }
+        }
+
+        // 如果当前块加上新段落会超出大小限制
+        if (currentChunk.length + paragraph.length > this.chunkSize) {
+          // 只有当当前块达到最小大小时才保存
+          if (currentChunk.length >= this.minChunkSize) {
+            currentChunk.source = `${filename} (片段 ${chunks.length + 1})`
+            chunks.push({ ...currentChunk })
+            
+            // 用重叠内容开始新的块
+            const lastSentences = this.getLastSentences(currentChunk.content, this.overlapSize)
+            currentChunk = {
+              title: filename,
+              content: lastSentences,
+              source: '',
+              length: lastSentences.length
+            }
+          }
+        }
+
+        // 添加段落到当前块
+        if (currentChunk.content) {
+          currentChunk.content += '\n\n'
+          currentChunk.length += 2
+        }
+        currentChunk.content += paragraph
+        currentChunk.length += paragraph.length
+      }
+
+      // 保存最后一个块
+      if (currentChunk.length >= this.minChunkSize) {
+        currentChunk.source = `${filename} (片段 ${chunks.length + 1})`
+        chunks.push(currentChunk)
+      }
+
+      return chunks
+    },
+
+    // 判断文本是否可能是标题
+    isLikelyTitle(text) {
+      // 标题特征：短、没有句号、可能有数字编号
+      return (
+        text.length < 100 &&
+        !text.includes('.') &&
+        (
+          /^[0-9.]+/.test(text) || // 数字开头
+          /^[第一二三四五六七八九十]+[章节]/.test(text) || // 中文数字章节
+          text.split(' ').length <= 10 // 词数少
+        )
+      )
+    },
+
+    // 获取文本的最后几个完整句子
+    getLastSentences(text, targetLength) {
+      const sentences = text.split(/(?<=\.|\!|\?)\s+/)
+      let result = ''
+      for (let i = sentences.length - 1; i >= 0; i--) {
+        const sentence = sentences[i]
+        if (result.length + sentence.length > targetLength) {
+          break
+        }
+        result = sentence + (result ? ' ' : '') + result
+      }
+      return result
+    },
+
+    // 修改切换文件展开状态的方法
+    toggleFileExpand(fileName) {
+      this.expandedFiles.set(fileName, !this.expandedFiles.get(fileName))
+      // 强制更新视图
+      this.expandedFiles = new Map(this.expandedFiles)
+    },
+
+    // 添加文件类型检查
+    isValidFileType(file) {
+      const validExtensions = ['.txt', '.md']
+      const extension = file.name.toLowerCase().slice(file.name.lastIndexOf('.'))
+      return validExtensions.includes(extension)
+    },
+
+    // 处理 Markdown 文件
+    processMdContent(content, filename) {
+      // 移除 YAML front matter
+      content = content.replace(/^---[\s\S]*?---/, '')
+
+      // 处理标题层级
+      const lines = content.split('\n')
+      const processedLines = []
+      let currentSection = ''
+      let inCodeBlock = false
+
+      for (let line of lines) {
+        // 处理代码块
+        if (line.startsWith('```')) {
+          inCodeBlock = !inCodeBlock
+          continue
+        }
+        if (inCodeBlock) continue
+
+        // 处理标题
+        if (line.startsWith('#')) {
+          const level = line.match(/^#+/)[0].length
+          const title = line.replace(/^#+\s*/, '').trim()
+          if (level === 1) {
+            currentSection = title
+          }
+          processedLines.push(title)
+          continue
+        }
+
+        // 移除 Markdown 语法
+        line = line
+          .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // 链接
+          .replace(/[*_]{1,2}([^*_]+)[*_]{1,2}/g, '$1') // 粗体和斜体
+          .replace(/`([^`]+)`/g, '$1') // 行内代码
+          .replace(/^\s*[-*+]\s+/g, '') // 列表标记
+          .replace(/^\s*\d+\.\s+/g, '') // 有序列表标记
+
+        if (line.trim()) {
+          processedLines.push(line)
+        }
+      }
+
+      return processedLines.join('\n')
+    },
+
+    // 修改文件上传处理
     async uploadFiles() {
       try {
+        const totalFiles = this.files.length
+        let processedFiles = 0
+        let invalidFiles = []
+
         for (const file of this.files) {
+          if (!this.isValidFileType(file)) {
+            invalidFiles.push(file.name)
+            continue
+          }
+
           const reader = new FileReader()
           reader.onload = async (e) => {
-            const content = e.target.result
-            // 使用Ollama获取文档的向量表示
-            const vector = await this.getEmbedding(content)
-            // 存储向量化后的文档
-            this.vectors.push({
-              title: file.name,
-              content: content,
-              vector: vector
-            })
+            let content = e.target.result
+            
+            // 根据文件类型处理内容
+            const extension = file.name.toLowerCase().slice(file.name.lastIndexOf('.'))
+            if (extension === '.md') {
+              content = this.processMdContent(content, file.name)
+            }
+
+            const chunks = this.splitIntoChunks(content, file.name)
+            
+            for (const chunk of chunks) {
+              const vector = await this.getEmbedding(chunk.content, this.indexModel)
+              this.vectors.push({
+                title: chunk.title,
+                content: chunk.content,
+                source: chunk.source,
+                fileType: extension.slice(1), // 存储文件类型
+                vector: vector
+              })
+            }
+
+            processedFiles++
+            if (processedFiles === totalFiles) {
+              let message = `处理完成！\n共处理 ${totalFiles - invalidFiles.length} 个文件，生成 ${this.vectors.length} 个文本片段`
+              if (invalidFiles.length > 0) {
+                message += `\n以下文件格式不支持：\n${invalidFiles.join('\n')}`
+              }
+              alert(message)
+            }
           }
           reader.readAsText(file)
         }
-        alert('文件上传并向量化成功！')
       } catch (error) {
         console.error('文件处理错误:', error)
         alert('文件处理失败')
       }
     },
 
+    // 修改文件片段显示
+    getChunkPreview(chunk) {
+      const preview = chunk.content.slice(0, 100)
+      return `[${chunk.fileType.toUpperCase()}] ${preview}...`
+    },
+
+    // 改进的分词方法
+    tokenize(text) {
+      // 处理中文
+      text = text.replace(/[\u4e00-\u9fa5]/g, str => str + ' ')
+      // 处理英文和数字
+      text = text.replace(/[a-zA-Z0-9]+/g, str => ' ' + str + ' ')
+      // 分词并过滤空字符
+      return text.toLowerCase()
+        .split(/[\s,.!?;:，。！？；：]+/)
+        .filter(term => term.length > 0)
+    },
+
+    // 修改混合检索方法
+    async getHybridSearchResults(query, documents) {
+      // 获取向量相似度分数
+      const queryVector = await this.getEmbedding(query, this.indexModel)
+      const vectorScores = documents.map(doc => ({
+        ...doc,
+        vectorScore: this.cosineSimilarity(queryVector, doc.vector)
+      }))
+
+      // 获取关键词匹配分数
+      const keywordScores = documents.map(doc => ({
+        ...doc,
+        keywordScore: this.calculateBM25Score(query, doc)
+      }))
+
+      // 归一化处理
+      const maxVectorScore = Math.max(...vectorScores.map(d => d.vectorScore), 0.0001)
+      const maxKeywordScore = Math.max(...keywordScores.map(d => d.keywordScore), 0.0001)
+      const minKeywordScore = Math.min(...keywordScores.map(d => d.keywordScore))
+
+      const normalizedResults = documents.map(doc => {
+        const vectorScore = vectorScores.find(d => d.source === doc.source).vectorScore
+        const keywordScore = keywordScores.find(d => d.source === doc.source).keywordScore
+
+        // 向量分数已经在0-1范围内，只需要归一化
+        const normalizedVectorScore = vectorScore / maxVectorScore
+
+        // 关键词分数归一化到0-1范围
+        const normalizedKeywordScore = keywordScore / maxKeywordScore
+
+        // 计算混合分数
+        const hybridScore = 
+          this.vectorWeight * normalizedVectorScore + 
+          this.keywordWeight * normalizedKeywordScore
+
+        // 计算显示用的百分比
+        const vectorPercentage = (normalizedVectorScore * 100).toFixed(1)
+        const keywordPercentage = (normalizedKeywordScore * 100).toFixed(1)
+
+        return {
+          ...doc,
+          vectorScore: normalizedVectorScore,
+          keywordScore: normalizedKeywordScore,
+          rawVectorScore: vectorPercentage,    // 存储为字符串，已包含小数点后1位
+          rawKeywordScore: keywordPercentage,  // 存储为字符串，已包含小数点后1位
+          hybridScore
+        }
+      })
+
+      return normalizedResults
+    },
+
+    // 修改BM25分数计算
+    calculateBM25Score(query, document) {
+      const k1 = 1.5
+      const b = 0.75
+
+      // 分词
+      const queryTerms = this.tokenize(query)
+      const docTerms = this.tokenize(document.content)
+      
+      // 计算平均文档长度
+      const avgDocLength = this.vectors.reduce((sum, doc) => 
+        sum + this.tokenize(doc.content).length, 0
+      ) / this.vectors.length
+
+      // 计算文档长度
+      const docLength = docTerms.length
+
+      // 计算词频
+      const termFreq = {}
+      docTerms.forEach(term => {
+        termFreq[term] = (termFreq[term] || 0) + 1
+      })
+
+      // 计算每个查询词的得分
+      let score = 0
+      for (const term of queryTerms) {
+        // 计算文档频率（包含该词的文档数量）
+        const docsWithTerm = this.vectors.filter(doc => 
+          this.tokenize(doc.content).includes(term)
+        ).length
+
+        if (docsWithTerm === 0) continue
+
+        // 计算IDF
+        const idf = Math.log(
+          (this.vectors.length - docsWithTerm + 0.5) / 
+          (docsWithTerm + 0.5) + 1
+        )
+
+        // 计算TF
+        const tf = termFreq[term] || 0
+
+        // 计算该词的BM25分数
+        const termScore = idf * (tf * (k1 + 1)) / 
+          (tf + k1 * (1 - b + b * docLength / avgDocLength))
+
+        score += termScore
+      }
+
+      // 调试输出
+      if (score > 0) {
+        console.log('BM25 Score:', {
+          query,
+          docTitle: document.title,
+          queryTerms,
+          score
+        })
+      }
+
+      // 限制最终分数在合理范围内
+      const maxScore = 5  // 降低最大分数限制
+      return Math.min(score, maxScore)
+    },
+
+    // 修改搜索文档方法的显示部分
     async searchDocuments() {
       try {
         if (!this.searchQuery) return
+
+        const results = await this.getHybridSearchResults(this.searchQuery, this.vectors)
         
-        // 获取搜索查询的向量表示
-        const queryVector = await this.getEmbedding(this.searchQuery)
-        
-        // 计算查询向量与所有文档向量的相似度
-        const results = this.vectors.map(doc => ({
-          title: doc.title,
-          content: doc.content,
-          similarity: this.cosineSimilarity(queryVector, doc.vector)
-        }))
-        
-        // 按相似度排序并获取前5个结果
         this.searchResults = results
-          .sort((a, b) => b.similarity - a.similarity)
+          .sort((a, b) => b.hybridScore - a.hybridScore)
           .slice(0, 5)
           .map(result => ({
-            ...result,
-            similarity: (result.similarity * 100).toFixed(2) + '%'
+            title: result.title,
+            content: result.content,
+            similarity: `向量相似度: ${result.rawVectorScore}%, 关键词匹配度: ${result.rawKeywordScore}%`
           }))
       } catch (error) {
         console.error('搜索错误:', error)
@@ -153,36 +570,55 @@ export default {
       }
     },
 
-    // 获取相关文档上下文
+    // 修改相关上下文获取方法的显示部分
     async getRelevantContext(query) {
-      const queryVector = await this.getEmbedding(query)
-      const results = this.vectors.map(doc => ({
-        content: doc.content,
-        similarity: this.cosineSimilarity(queryVector, doc.vector),
-        title: doc.title  // 添加标题信息
-      }))
-      .sort((a, b) => b.similarity - a.similarity)
-      .filter(doc => doc.similarity > 0.3)  // 添加相似度阈值
-      .slice(0, 3)
-      
-      // 格式化上下文，包含文档标题和相似度信息
-      return results.map(r => 
-        `文档《${r.title}》(相似度: ${(r.similarity * 100).toFixed(1)}%):\n${r.content}`
-      ).join('\n\n')
+      try {
+        const results = await this.getHybridSearchResults(query, this.vectors)
+        
+        const sortedResults = results
+          .sort((a, b) => b.hybridScore - a.hybridScore)
+          .filter(doc => doc.hybridScore > 0.3)
+          .slice(0, 3)
+
+        if (sortedResults.length === 0) {
+          return '未找到相关的参考文档。'
+        }
+
+        return sortedResults.map(r => {
+          const similarityLevel = this.getHybridSimilarityLevel(r)
+          return `文档《${r.source}》(相关度: ${similarityLevel}, 向量相似度: ${r.rawVectorScore}%, 关键词匹配度: ${r.rawKeywordScore}%):\n${r.content}`
+        }).join('\n\n')
+      } catch (error) {
+        console.error('获取相关上下文失败:', error)
+        return '获取参考文档时出现错误。'
+      }
+    },
+
+    // 修改相似度等级的判断标准
+    getHybridSimilarityLevel(result) {
+      const score = result.hybridScore
+      if (score > 0.8) return '极高'
+      if (score > 0.6) return '高'
+      if (score > 0.4) return '中等'
+      if (score > 0.2) return '较低'
+      return '很低'
     },
 
     async sendMessage() {
       if (!this.chatInput.trim() || this.isProcessing) return
       
       this.isProcessing = true
+      this.isStreaming = true
       const userMessage = this.chatInput.trim()
       this.chatHistory.push({ role: 'user', content: userMessage })
       this.chatInput = ''
+      this.currentStreamMessage = ''
 
       try {
+        // 获取相关上下文
         const context = await this.getRelevantContext(userMessage)
         
-        // 改进的提示词模板
+        // 构建提示词
         const prompt = `你是一个智能助手。请基于提供的参考文档来回答用户的问题。
 
 回答要求：
@@ -190,6 +626,7 @@ export default {
 2. 如果参考文档中没有相关信息，请明确告知无法回答
 3. 如果参考文档信息不完整，可以基于已有信息进行合理推测，但必须明确指出哪些是推测的内容
 4. 回答要简洁清晰，并尽可能引用原文关键内容
+5. 如果相似度较低，请说明参考文档的相关性可能不高
 
 参考文档：
 ${context}
@@ -197,30 +634,58 @@ ${context}
 用户问题：${userMessage}
 
 请按照以上要求给出回答：`
-        
+
         const response = await fetch(`${this.ollamaEndpoint}/api/generate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             model: this.selectedModel,
             prompt: prompt,
-            stream: false,
+            stream: true,  // 启用流式输出
             options: {
-              temperature: 0.7,  // 添加温度参数
-              top_k: 40,        // 添加top_k参数
-              top_p: 0.9        // 添加top_p参数
+              temperature: 0.7,
+              top_k: 40,
+              top_p: 0.9
             }
           })
         })
-        
-        const data = await response.json()
-        this.chatHistory.push({ role: 'assistant', content: data.response })
-        
-        // 滚动到最新消息
-        this.$nextTick(() => {
-          const chatMessages = this.$refs.chatMessages
-          chatMessages.scrollTop = chatMessages.scrollHeight
+
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+
+          const chunk = decoder.decode(value)
+          const lines = chunk.split('\n')
+          
+          for (const line of lines) {
+            if (line.trim() === '') continue
+            
+            try {
+              const json = JSON.parse(line)
+              if (json.response) {
+                this.currentStreamMessage += json.response
+                
+                // 自动滚动到底部
+                this.$nextTick(() => {
+                  const chatMessages = this.$refs.chatMessages
+                  chatMessages.scrollTop = chatMessages.scrollHeight
+                })
+              }
+            } catch (e) {
+              console.error('解析流数据失败:', e)
+            }
+          }
+        }
+
+        // 将完整的回复添加到聊天历史
+        this.chatHistory.push({ 
+          role: 'assistant', 
+          content: this.currentStreamMessage 
         })
+        
       } catch (error) {
         console.error('聊天请求失败:', error)
         this.chatHistory.push({ 
@@ -229,6 +694,30 @@ ${context}
         })
       } finally {
         this.isProcessing = false
+        this.isStreaming = false
+        this.currentStreamMessage = ''
+      }
+    },
+
+    async testConnection() {
+      try {
+        const response = await fetch(`${this.ollamaEndpoint}/api/tags`)
+        if (response.ok) {
+          const data = await response.json()
+          // 更新可用模型列表
+          this.availableModels = data.models
+            .filter(model => model.name !== 'nomic-embed-text') // 排除索引模型
+            .map(model => ({
+              id: model.name,
+              name: model.name
+            }))
+          alert('连接成功！已更新可用模型列表。')
+        } else {
+          throw new Error('服务器响应异常')
+        }
+      } catch (error) {
+        console.error('连接测试失败:', error)
+        alert('连接失败，请检查服务地址是否正确。')
       }
     },
   }
@@ -236,20 +725,105 @@ ${context}
 </script>
 
 <style scoped>
+/* 基础布局 */
 .knowledge-base {
   padding: 20px;
+  min-height: 100vh;
+  height: 100vh; /* 添加固定高度 */
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box; /* 确保padding不会增加总高度 */
 }
 
-.upload-section, .search-section {
+.settings-section {
   margin-bottom: 20px;
+  padding: 15px;
+  background-color: #f8f9fa;
+  border-radius: 8px;
+  border: 1px solid #dee2e6;
+  flex-shrink: 0; /* 防止设置区域被压缩 */
 }
 
-input[type="text"] {
+.main-content {
+  display: flex;
+  gap: 20px;
+  flex: 1;
+  min-height: 0; /* 防止flex子元素溢出 */
+  height: 0; /* 确保flex-grow能够正常工作 */
+  overflow: hidden; /* 防止内容溢出 */
+}
+
+.knowledge-section, .chat-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  overflow: hidden;
+  min-width: 300px;
+  height: 100%; /* 确保高度填满父容器 */
+}
+
+/* 内容区域的滚动控制 */
+.results-section, .chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0; /* 确保内容可以正确滚动 */
+}
+
+/* 响应式布局调整 */
+@media (max-width: 1024px) {
+  .knowledge-base {
+    height: auto;
+    min-height: 100vh;
+  }
+
+  .main-content {
+    flex-direction: column;
+    height: auto;
+    min-height: 800px; /* 设置最小高度 */
+  }
+
+  .knowledge-section, .chat-section {
+    height: 500px; /* 在移动端设置固定高度 */
+    flex: none; /* 防止伸缩 */
+  }
+}
+
+.setting-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap; /* 允许在小屏幕上换行 */
+}
+
+.setting-item label {
+  min-width: 120px;
+  font-weight: 500;
+}
+
+.setting-item input {
+  flex: 1;
+  min-width: 200px; /* 输入框最小宽度 */
   padding: 8px;
-  width: 300px;
-  margin-right: 10px;
+  border: 1px solid #ced4da;
+  border-radius: 4px;
+  font-size: 14px;
 }
 
+/* 搜索和上传部分的响应式调整 */
+.upload-section, .search-section {
+  padding: 15px;
+  border-bottom: 1px solid #ddd;
+}
+
+.upload-section input[type="file"],
+.search-section input[type="text"] {
+  width: 100%;
+  margin-bottom: 10px;
+}
+
+/* 按钮样式优化 */
 button {
   padding: 8px 16px;
   background-color: #4CAF50;
@@ -257,33 +831,13 @@ button {
   border: none;
   border-radius: 4px;
   cursor: pointer;
+  white-space: nowrap;
+  min-width: 80px;
 }
 
-button:hover {
-  background-color: #45a049;
-}
-
-.result-item {
-  border: 1px solid #ddd;
-  padding: 15px;
-  margin-bottom: 10px;
-  border-radius: 4px;
-}
-
-.similarity {
-  color: #666;
-  font-size: 0.9em;
-}
-
-.chat-section {
-  margin-top: 30px;
-  border: 1px solid #ddd;
-  border-radius: 8px;
-  overflow: hidden;
-}
-
+/* 聊天区域的响应式调整 */
 .chat-messages {
-  height: 400px;
+  flex: 1;
   overflow-y: auto;
   padding: 20px;
   background-color: #f9f9f9;
@@ -293,7 +847,8 @@ button:hover {
   margin-bottom: 15px;
   padding: 10px;
   border-radius: 8px;
-  max-width: 80%;
+  max-width: 85%;
+  word-wrap: break-word; /* 长文本自动换行 */
 }
 
 .message.user {
@@ -306,25 +861,24 @@ button:hover {
   margin-right: auto;
 }
 
+/* 聊天输入框的响应式调整 */
 .chat-input {
   display: flex;
   padding: 15px;
   background-color: white;
   border-top: 1px solid #ddd;
+  gap: 10px;
 }
 
 .chat-input input {
   flex: 1;
-  margin-right: 10px;
+  min-width: 0; /* 允许输入框在flex容器中缩小 */
   padding: 8px;
   border: 1px solid #ddd;
   border-radius: 4px;
 }
 
-.chat-input button {
-  padding: 8px 20px;
-}
-
+/* 模型选择器的响应式调整 */
 .model-selector {
   padding: 10px 15px;
   background-color: #f5f5f5;
@@ -332,11 +886,201 @@ button:hover {
 }
 
 .model-selector select {
-  padding: 6px;
+  width: 100%;
+  padding: 8px;
   border-radius: 4px;
   border: 1px solid #ddd;
-  width: 200px;
   font-size: 14px;
+}
+
+/* 搜索结果的响应式调整 */
+.result-item {
+  background-color: white;
+  margin-bottom: 10px;
+  padding: 15px;
+  border-radius: 4px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  word-wrap: break-word; /* 长文本自动换行 */
+}
+
+/* 标题样式 */
+h2 {
+  margin: 0;
+  padding: 15px;
+  background-color: #f5f5f5;
+  border-bottom: 1px solid #ddd;
+  font-size: 1.2em;
+  text-align: center;
+}
+
+/* 滚动条美化 */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #888;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
+
+/* 保持其他现有样式 */
+.message p {
+  white-space: pre-wrap;
+  margin: 0;
+}
+
+.message.assistant p:last-child::after {
+  content: '▋';
+  animation: cursor 0.8s infinite;
+}
+
+@keyframes cursor {
+  0% { opacity: 0; }
+  50% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* 小屏幕适配 */
+@media (max-width: 768px) {
+  .knowledge-base {
+    padding: 10px;
+  }
+
+  .main-content {
+    gap: 10px;
+  }
+
+  .setting-item {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .setting-item label {
+    min-width: auto;
+    margin-bottom: 5px;
+  }
+
+  .message {
+    max-width: 95%;
+  }
+
+  button {
+    padding: 8px 12px;
+    min-width: 60px;
+  }
+}
+
+.kb-stats {
+  padding: 15px;
+  background-color: #f8f9fa;
+  border-bottom: 1px solid #ddd;
+}
+
+.kb-stats h3 {
+  margin: 0 0 10px 0;
+  font-size: 1em;
+  color: #333;
+}
+
+.stats-info p {
+  margin: 5px 0;
+  font-size: 0.9em;
+  color: #666;
+}
+
+.file-chunks {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px;
+}
+
+.file-group {
+  margin-bottom: 10px;
+  border: 1px solid #eee;
+  border-radius: 4px;
+}
+
+.file-header {
+  padding: 10px;
+  background-color: #f8f9fa;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.file-name {
+  font-weight: 500;
+  flex: 1;
+}
+
+.chunk-count {
+  color: #666;
+  font-size: 0.9em;
+}
+
+.expand-icon {
+  color: #666;
+  font-size: 0.8em;
+}
+
+.chunk-list {
+  padding: 10px;
+  background-color: white;
+}
+
+.chunk-item {
+  padding: 8px;
+  border-bottom: 1px solid #eee;
+}
+
+.chunk-item:last-child {
+  border-bottom: none;
+}
+
+.chunk-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 5px;
+}
+
+.chunk-length {
+  font-size: 0.8em;
+  color: #666;
+}
+
+.chunk-preview {
+  margin: 0;
+  font-size: 0.9em;
+  color: #666;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 添加新样式 */
+.supported-formats {
+  font-size: 0.8em;
+  color: #666;
+  margin: 5px 0;
+}
+
+.file-type {
+  background-color: #e9ecef;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 0.8em;
+  color: #495057;
+  margin-right: 8px;
 }
 </style>
 
