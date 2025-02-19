@@ -16,12 +16,54 @@
       <!-- 左侧知识库部分 -->
       <div class="knowledge-section">
         <h2>知识库管理</h2>
-        <div class="upload-section">
-          <input type="file" @change="handleFileUpload" multiple accept=".txt,.md">
-          <div class="supported-formats">
-            支持的格式：TXT, MD
+        
+        <!-- 上传文件部分 -->
+        <div class="upload-block">
+          <h3>文件上传</h3>
+          <div class="upload-section">
+            <input type="file" @change="handleFileUpload" multiple accept=".txt,.md">
+            <div class="supported-formats">
+              支持的格式：TXT, MD
+            </div>
+            <div class="upload-status" v-if="uploadStatus.isUploading">
+              <div class="progress-bar">
+                <div class="progress" :style="{ width: uploadStatus.progress + '%' }"></div>
+              </div>
+              <div class="status-text">
+                正在处理: {{ uploadStatus.currentFile }}
+                <span class="detail">{{ uploadStatus.currentChunk }}/{{ uploadStatus.totalChunks }} 片段</span>
+              </div>
+            </div>
+            <button 
+              @click="uploadFiles" 
+              :disabled="uploadStatus.isUploading"
+            >
+              {{ uploadStatus.isUploading ? '处理中...' : '上传文件' }}
+            </button>
           </div>
-          <button @click="uploadFiles">上传文件</button>
+        </div>
+
+        <!-- 搜索部分 -->
+        <div class="search-block">
+          <h3>知识库搜索</h3>
+          <div class="search-section">
+            <div class="search-input-wrapper">
+              <input 
+                type="text" 
+                v-model="searchQuery" 
+                placeholder="输入搜索关键词"
+                @keyup.enter="searchDocuments"
+              >
+              <button @click="searchDocuments">搜索</button>
+            </div>
+            <div class="results-section">
+              <div v-for="(result, index) in searchResults" :key="index" class="result-item">
+                <h4>{{ result.title }}</h4>
+                <p>{{ result.content }}</p>
+                <p class="similarity">相似度: {{ result.similarity }}</p>
+              </div>
+            </div>
+          </div>
         </div>
 
         <!-- 添加知识库统计信息 -->
@@ -54,19 +96,6 @@
             </div>
           </div>
         </div>
-
-        <div class="search-section">
-          <input type="text" v-model="searchQuery" placeholder="输入搜索关键词">
-          <button @click="searchDocuments">搜索</button>
-        </div>
-
-        <div class="results-section">
-          <div v-for="(result, index) in searchResults" :key="index" class="result-item">
-            <h3>{{ result.title }}</h3>
-            <p>{{ result.content }}</p>
-            <p class="similarity">相似度: {{ result.similarity }}</p>
-          </div>
-        </div>
       </div>
 
       <!-- 右侧聊天部分 -->
@@ -89,7 +118,7 @@
             <p v-if="message.role === 'user'">{{ message.content }}</p>
             <p v-else v-html="message.content"></p>
           </div>
-          <div v-if="isStreaming" class="message assistant">
+          <div v-if="isStreaming" class="message assistant typing">
             <p v-html="currentStreamMessage"></p>
           </div>
         </div>
@@ -101,6 +130,19 @@
                  placeholder="输入消息与AI对话">
           <button @click="sendMessage">发送</button>
         </div>
+      </div>
+    </div>
+
+    <!-- 添加弹窗组件 -->
+    <div class="toast-container" v-if="toast.show">
+      <div class="toast" :class="toast.type">
+        <div class="toast-content">
+          <span class="toast-icon">
+            {{ toast.type === 'success' ? '✓' : toast.type === 'error' ? '✕' : 'ℹ' }}
+          </span>
+          <span class="toast-message" v-html="toast.message.replace(/\n/g, '<br>')"></span>
+        </div>
+        <button class="toast-close" @click="hideToast">×</button>
       </div>
     </div>
   </div>
@@ -138,6 +180,39 @@ export default {
         'text/plain': '.txt',
         'text/markdown': '.md',
       },
+      uploadStatus: {
+        isUploading: false,
+        progress: 0,
+        currentFile: '',
+        currentChunk: 0,
+        totalChunks: 0,
+        processedFiles: 0,
+        totalFiles: 0
+      },
+      toast: {
+        show: false,
+        message: '',
+        type: 'info', // 'success', 'error', 'info'
+        timeout: null
+      },
+      chunkConfig: {
+        txt: {
+          maxSize: 1000,
+          minSize: 100,
+          overlap: 200
+        },
+        md: {
+          maxSize: 1500,
+          minSize: 150,
+          overlap: 300,
+          headingLevels: {
+            h1: 1500,
+            h2: 1200,
+            h3: 1000,
+            h4: 800
+          }
+        }
+      }
     }
   },
   computed: {
@@ -207,52 +282,71 @@ export default {
     },
 
     // 优化文本分段处理
-    splitIntoChunks(text, filename) {
-      // 预处理文本，移除多余空白
-      text = text.replace(/\s+/g, ' ').trim()
+    splitIntoChunks(content, filename) {
+      const extension = filename.toLowerCase().slice(filename.lastIndexOf('.') + 1)
+      const config = this.chunkConfig[extension] || this.chunkConfig.txt
+
+      // 预处理文本
+      content = this.preprocessText(content)
       
+      // 根据文件类型选择分段策略
+      if (extension === 'md') {
+        return this.splitMarkdownContent(content, filename, config)
+      } else {
+        return this.splitTextContent(content, filename, config)
+      }
+    },
+
+    // 文本预处理
+    preprocessText(text) {
+      return text
+        .replace(/\r\n/g, '\n') // 统一换行符
+        .replace(/\n{3,}/g, '\n\n') // 合并多个空行
+        .replace(/\s+/g, ' ') // 合并多个空格
+        .trim()
+    },
+
+    // 处理普通文本文件
+    splitTextContent(content, filename, config) {
       // 首先按自然段落分割
-      const paragraphs = text.split(/(?<=\.|\!|\?)\s+/)
+      const paragraphs = content.split(/\n\s*\n/)
       const chunks = []
       let currentChunk = {
         title: filename,
         content: '',
-        source: '',
         length: 0
       }
 
-      for (let i = 0; i < paragraphs.length; i++) {
-        const paragraph = paragraphs[i].trim()
-        if (!paragraph) continue
+      for (const paragraph of paragraphs) {
+        const cleanParagraph = paragraph.trim()
+        if (!cleanParagraph) continue
 
-        // 检查是否是标题行（通过特征判断）
-        const isTitle = this.isLikelyTitle(paragraph)
-        
-        // 如果当前段落很短且看起来像标题，将其与下一段组合
-        if (isTitle && i < paragraphs.length - 1) {
-          const nextParagraph = paragraphs[i + 1].trim()
-          const combined = paragraph + '\n' + nextParagraph
-          if (combined.length <= this.chunkSize) {
-            paragraphs[i] = combined
-            paragraphs.splice(i + 1, 1)
+        // 处理超长段落
+        if (cleanParagraph.length > config.maxSize) {
+          // 如果当前块不为空，先保存
+          if (currentChunk.length >= config.minSize) {
+            chunks.push(this.finalizeChunk(currentChunk, filename, chunks.length))
+            currentChunk = this.initializeChunk(filename)
           }
+
+          // 分割长段落
+          const sentenceChunks = this.splitLongParagraph(cleanParagraph, config)
+          for (const chunk of sentenceChunks) {
+            chunks.push(this.finalizeChunk({
+              title: filename,
+              content: chunk,
+              length: chunk.length
+            }, filename, chunks.length))
+          }
+          continue
         }
 
-        // 如果当前块加上新段落会超出大小限制
-        if (currentChunk.length + paragraph.length > this.chunkSize) {
-          // 只有当当前块达到最小大小时才保存
-          if (currentChunk.length >= this.minChunkSize) {
-            currentChunk.source = `${filename} (片段 ${chunks.length + 1})`
-            chunks.push({ ...currentChunk })
-            
-            // 用重叠内容开始新的块
-            const lastSentences = this.getLastSentences(currentChunk.content, this.overlapSize)
-            currentChunk = {
-              title: filename,
-              content: lastSentences,
-              source: '',
-              length: lastSentences.length
-            }
+        // 检查是否需要开始新的块
+        if (currentChunk.length + cleanParagraph.length > config.maxSize) {
+          if (currentChunk.length >= config.minSize) {
+            chunks.push(this.finalizeChunk(currentChunk, filename, chunks.length))
+            // 使用重叠内容开始新的块
+            currentChunk = this.initializeChunk(filename, this.getOverlappingContent(currentChunk.content, config.overlap))
           }
         }
 
@@ -261,45 +355,111 @@ export default {
           currentChunk.content += '\n\n'
           currentChunk.length += 2
         }
-        currentChunk.content += paragraph
-        currentChunk.length += paragraph.length
+        currentChunk.content += cleanParagraph
+        currentChunk.length += cleanParagraph.length
       }
 
       // 保存最后一个块
-      if (currentChunk.length >= this.minChunkSize) {
-        currentChunk.source = `${filename} (片段 ${chunks.length + 1})`
-        chunks.push(currentChunk)
+      if (currentChunk.length >= config.minSize) {
+        chunks.push(this.finalizeChunk(currentChunk, filename, chunks.length))
       }
 
       return chunks
     },
 
-    // 判断文本是否可能是标题
-    isLikelyTitle(text) {
-      // 标题特征：短、没有句号、可能有数字编号
-      return (
-        text.length < 100 &&
-        !text.includes('.') &&
-        (
-          /^[0-9.]+/.test(text) || // 数字开头
-          /^[第一二三四五六七八九十]+[章节]/.test(text) || // 中文数字章节
-          text.split(' ').length <= 10 // 词数少
+    // 处理 Markdown 文件
+    splitMarkdownContent(content, filename, config) {
+      const sections = this.parseMdSections(content)
+      const chunks = []
+      let currentSection = null
+
+      for (const section of sections) {
+        const sectionConfig = {
+          ...config,
+          maxSize: config.headingLevels[`h${section.level}`] || config.maxSize
+        }
+
+        // 处理每个章节
+        const sectionChunks = this.splitTextContent(
+          section.content,
+          filename,
+          sectionConfig
         )
-      )
+
+        // 为每个块添加标题信息
+        sectionChunks.forEach(chunk => {
+          chunk.metadata = {
+            ...chunk.metadata,
+            heading: section.heading,
+            level: section.level
+          }
+          chunk.source = `${filename} - ${section.heading} (片段 ${chunks.length + 1})`
+        })
+
+        chunks.push(...sectionChunks)
+      }
+
+      return chunks
     },
 
-    // 获取文本的最后几个完整句子
-    getLastSentences(text, targetLength) {
-      const sentences = text.split(/(?<=\.|\!|\?)\s+/)
-      let result = ''
+    // 分割长段落
+    splitLongParagraph(paragraph, config) {
+      const sentences = paragraph.match(/[^.!?]+[.!?]+/g) || [paragraph]
+      const chunks = []
+      let currentChunk = ''
+
+      for (const sentence of sentences) {
+        if (currentChunk.length + sentence.length > config.maxSize) {
+          if (currentChunk.length >= config.minSize) {
+            chunks.push(currentChunk.trim())
+            currentChunk = this.getOverlappingContent(currentChunk, config.overlap)
+          }
+        }
+        currentChunk += sentence + ' '
+      }
+
+      if (currentChunk.length >= config.minSize) {
+        chunks.push(currentChunk.trim())
+      }
+
+      return chunks
+    },
+
+    // 获取重叠内容
+    getOverlappingContent(text, overlapSize) {
+      const sentences = text.match(/[^.!?]+[.!?]+/g) || []
+      let overlap = ''
+      let currentLength = 0
+
       for (let i = sentences.length - 1; i >= 0; i--) {
         const sentence = sentences[i]
-        if (result.length + sentence.length > targetLength) {
-          break
-        }
-        result = sentence + (result ? ' ' : '') + result
+        if (currentLength + sentence.length > overlapSize) break
+        overlap = sentence + overlap
+        currentLength += sentence.length
       }
-      return result
+
+      return overlap.trim()
+    },
+
+    // 初始化新的块
+    initializeChunk(filename, initialContent = '') {
+      return {
+        title: filename,
+        content: initialContent,
+        length: initialContent.length,
+        metadata: {}
+      }
+    },
+
+    // 完成块的处理
+    finalizeChunk(chunk, filename, index) {
+      return {
+        ...chunk,
+        source: chunk.metadata?.heading 
+          ? `${filename} - ${chunk.metadata.heading} (片段 ${index + 1})`
+          : `${filename} (片段 ${index + 1})`,
+        fileType: filename.split('.').pop().toLowerCase()
+      }
     },
 
     // 修改切换文件展开状态的方法
@@ -366,15 +526,32 @@ export default {
     async uploadFiles() {
       try {
         const totalFiles = this.files.length
-        let processedFiles = 0
+        if (totalFiles === 0) {
+          this.showToast('请选择要上传的文件', 'error')
+          return
+        }
+
+        this.uploadStatus = {
+          isUploading: true,
+          progress: 0,
+          currentFile: '',
+          currentChunk: 0,
+          totalChunks: 0,
+          processedFiles: 0,
+          totalFiles
+        }
+
         let invalidFiles = []
 
         for (const file of this.files) {
           if (!this.isValidFileType(file)) {
             invalidFiles.push(file.name)
+            this.uploadStatus.processedFiles++
             continue
           }
 
+          this.uploadStatus.currentFile = file.name
+          
           const reader = new FileReader()
           reader.onload = async (e) => {
             let content = e.target.result
@@ -386,32 +563,44 @@ export default {
             }
 
             const chunks = this.splitIntoChunks(content, file.name)
+            this.uploadStatus.totalChunks = chunks.length
+            this.uploadStatus.currentChunk = 0
             
             for (const chunk of chunks) {
+              this.uploadStatus.currentChunk++
               const vector = await this.getEmbedding(chunk.content, this.indexModel)
               this.vectors.push({
                 title: chunk.title,
                 content: chunk.content,
                 source: chunk.source,
-                fileType: extension.slice(1), // 存储文件类型
+                fileType: extension.slice(1),
                 vector: vector
               })
+
+              // 更新进度
+              this.uploadStatus.progress = Math.round(
+                (this.uploadStatus.processedFiles * 100 / totalFiles) +
+                (this.uploadStatus.currentChunk * 100 / chunks.length / totalFiles)
+              )
             }
 
-            processedFiles++
-            if (processedFiles === totalFiles) {
+            this.uploadStatus.processedFiles++
+            
+            if (this.uploadStatus.processedFiles === totalFiles) {
               let message = `处理完成！\n共处理 ${totalFiles - invalidFiles.length} 个文件，生成 ${this.vectors.length} 个文本片段`
               if (invalidFiles.length > 0) {
                 message += `\n以下文件格式不支持：\n${invalidFiles.join('\n')}`
               }
-              alert(message)
+              this.showToast(message, 'success', 5000)
+              this.uploadStatus.isUploading = false
             }
           }
           reader.readAsText(file)
         }
       } catch (error) {
         console.error('文件处理错误:', error)
-        alert('文件处理失败')
+        this.showToast('文件处理失败', 'error')
+        this.uploadStatus.isUploading = false
       }
     },
 
@@ -704,35 +893,146 @@ ${context}
         const response = await fetch(`${this.ollamaEndpoint}/api/tags`)
         if (response.ok) {
           const data = await response.json()
-          // 更新可用模型列表
           this.availableModels = data.models
-            .filter(model => model.name !== 'nomic-embed-text') // 排除索引模型
+            .filter(model => model.name !== 'nomic-embed-text')
             .map(model => ({
               id: model.name,
               name: model.name
             }))
-          alert('连接成功！已更新可用模型列表。')
+          this.showToast('连接成功！已更新可用模型列表。', 'success')
         } else {
           throw new Error('服务器响应异常')
         }
       } catch (error) {
         console.error('连接测试失败:', error)
-        alert('连接失败，请检查服务地址是否正确。')
+        this.showToast('连接失败，请检查服务地址是否正确。', 'error')
       }
     },
+
+    // 显示弹窗提示
+    showToast(message, type = 'info', duration = 3000) {
+      // 清除之前的定时器
+      if (this.toast.timeout) {
+        clearTimeout(this.toast.timeout)
+      }
+
+      this.toast.message = message
+      this.toast.type = type
+      this.toast.show = true
+
+      // 设置自动关闭
+      if (duration > 0) {
+        this.toast.timeout = setTimeout(() => {
+          this.hideToast()
+        }, duration)
+      }
+    },
+
+    // 隐藏弹窗
+    hideToast() {
+      this.toast.show = false
+      if (this.toast.timeout) {
+        clearTimeout(this.toast.timeout)
+        this.toast.timeout = null
+      }
+    },
+
+    // 添加 Markdown 章节解析方法
+    parseMdSections(content) {
+      const lines = content.split('\n')
+      const sections = []
+      let currentSection = {
+        heading: '',
+        content: [],
+        level: 0
+      }
+      let inCodeBlock = false
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i]
+
+        // 处理代码块
+        if (line.startsWith('```')) {
+          inCodeBlock = !inCodeBlock
+          continue
+        }
+
+        // 在代码块内的内容直接添加
+        if (inCodeBlock) {
+          currentSection.content.push(line)
+          continue
+        }
+
+        // 检测标题
+        const headingMatch = line.match(/^(#{1,6})\s+(.+)/)
+        if (headingMatch) {
+          // 保存之前的章节
+          if (currentSection.content.length > 0 || currentSection.heading) {
+            sections.push({
+              ...currentSection,
+              content: this.cleanMdContent(currentSection.content.join('\n'))
+            })
+          }
+
+          // 开始新章节
+          currentSection = {
+            heading: headingMatch[2].trim(),
+            content: [],
+            level: headingMatch[1].length
+          }
+        } else {
+          // 处理普通内容
+          currentSection.content.push(line)
+        }
+      }
+
+      // 保存最后一个章节
+      if (currentSection.content.length > 0 || currentSection.heading) {
+        sections.push({
+          ...currentSection,
+          content: this.cleanMdContent(currentSection.content.join('\n'))
+        })
+      }
+
+      // 如果没有任何章节（没有标题），创建一个默认章节
+      if (sections.length === 0) {
+        sections.push({
+          heading: '文档内容',
+          content: this.cleanMdContent(content),
+          level: 1
+        })
+      }
+
+      return sections
+    },
+
+    // 清理 Markdown 内容
+    cleanMdContent(text) {
+      return text
+        .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // 移除链接，保留文本
+        .replace(/[*_]{1,2}([^*_]+)[*_]{1,2}/g, '$1') // 移除加粗和斜体标记
+        .replace(/`([^`]+)`/g, '$1') // 移除行内代码标记
+        .replace(/^\s*[-*+]\s+/gm, '') // 移除无序列表标记
+        .replace(/^\s*\d+\.\s+/gm, '') // 移除有序列表标记
+        .replace(/^\s*>\s+/gm, '') // 移除引用标记
+        .replace(/\n{3,}/g, '\n\n') // 合并多个空行
+        .trim()
+    }
   }
 }
 </script>
 
 <style scoped>
-/* 基础布局 */
+/* 修改基础布局样式 */
 .knowledge-base {
   padding: 20px;
   min-height: 100vh;
-  height: 100vh; /* 添加固定高度 */
+  height: 100vh;
   display: flex;
   flex-direction: column;
-  box-sizing: border-box; /* 确保padding不会增加总高度 */
+  box-sizing: border-box;
+  max-width: 100%; /* 确保不超过视口宽度 */
+  margin: 0; /* 移除可能的外边距 */
 }
 
 .settings-section {
@@ -748,45 +1048,64 @@ ${context}
   display: flex;
   gap: 20px;
   flex: 1;
-  min-height: 0; /* 防止flex子元素溢出 */
-  height: 0; /* 确保flex-grow能够正常工作 */
-  overflow: hidden; /* 防止内容溢出 */
+  min-height: 0;
+  height: 0;
+  overflow: hidden;
+  width: 100%; /* 确保宽度充满 */
 }
 
-.knowledge-section, .chat-section {
-  flex: 1;
+.knowledge-section {
+  flex: 2; /* 增加知识库部分的比例 */
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  overflow: hidden;
+  min-width: 400px; /* 增加最小宽度 */
+}
+
+.chat-section {
+  flex: 1; /* 减小聊天部分的比例 */
   display: flex;
   flex-direction: column;
   border: 1px solid #ddd;
   border-radius: 8px;
   overflow: hidden;
   min-width: 300px;
-  height: 100%; /* 确保高度填满父容器 */
 }
 
-/* 内容区域的滚动控制 */
-.results-section, .chat-messages {
-  flex: 1;
-  overflow-y: auto;
-  min-height: 0; /* 确保内容可以正确滚动 */
+/* 调整内容区域的宽度 */
+.upload-section,
+.search-section,
+.kb-stats,
+.file-chunks {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* 调整文件列表的显示 */
+.file-group {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* 调整搜索结果区域 */
+.results-section {
+  width: 100%;
+  box-sizing: border-box;
 }
 
 /* 响应式布局调整 */
 @media (max-width: 1024px) {
-  .knowledge-base {
-    height: auto;
-    min-height: 100vh;
-  }
-
   .main-content {
     flex-direction: column;
-    height: auto;
-    min-height: 800px; /* 设置最小高度 */
   }
 
-  .knowledge-section, .chat-section {
-    height: 500px; /* 在移动端设置固定高度 */
-    flex: none; /* 防止伸缩 */
+  .knowledge-section,
+  .chat-section {
+    width: 100%;
+    flex: none;
+    min-width: 100%;
   }
 }
 
@@ -938,8 +1257,7 @@ h2 {
 }
 
 .message.assistant p:last-child::after {
-  content: '▋';
-  animation: cursor 0.8s infinite;
+  content: none;
 }
 
 @keyframes cursor {
@@ -1081,6 +1399,326 @@ h2 {
   font-size: 0.8em;
   color: #495057;
   margin-right: 8px;
+}
+
+/* 知识库区块样式 */
+.upload-block,
+.search-block {
+  width: 100%;
+  border-bottom: 1px solid #ddd;
+  background-color: #fff;
+}
+
+.upload-block h3,
+.search-block h3 {
+  margin: 0;
+  padding: 12px 15px;
+  font-size: 1em;
+  background-color: #f8f9fa;
+  border-bottom: 1px solid #ddd;
+  color: #333;
+}
+
+/* 上传区域样式 */
+.upload-section {
+  padding: 15px;
+  background-color: #fff;
+}
+
+/* 搜索区域样式 */
+.search-section {
+  padding: 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.search-input-wrapper {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+}
+
+.search-input-wrapper input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+}
+
+.search-input-wrapper button {
+  min-width: 80px;
+  white-space: nowrap;
+}
+
+/* 搜索结果样式 */
+.results-section {
+  flex: 1;
+  overflow-y: auto;
+  margin-top: 10px;
+}
+
+.result-item {
+  background-color: #f8f9fa;
+  border: 1px solid #eee;
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 10px;
+}
+
+.result-item h4 {
+  margin: 0 0 8px 0;
+  color: #2c3e50;
+  font-size: 1em;
+}
+
+.result-item p {
+  margin: 8px 0;
+  color: #666;
+  font-size: 0.9em;
+  line-height: 1.4;
+}
+
+.similarity {
+  color: #666;
+  font-size: 0.85em;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #eee;
+}
+
+/* 响应式调整 */
+@media (max-width: 768px) {
+  .search-input-wrapper {
+    flex-direction: column;
+  }
+  
+  .search-input-wrapper button {
+    width: 100%;
+  }
+}
+
+.upload-status {
+  margin: 10px 0;
+  padding: 10px;
+  background-color: #f8f9fa;
+  border-radius: 4px;
+  border: 1px solid #ddd;
+}
+
+.progress-bar {
+  height: 6px;
+  background-color: #eee;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.progress {
+  height: 100%;
+  background-color: #4CAF50;
+  transition: width 0.3s ease;
+}
+
+.status-text {
+  font-size: 0.9em;
+  color: #666;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.status-text .detail {
+  color: #999;
+  font-size: 0.9em;
+}
+
+button:disabled {
+  background-color: #ccc;
+  cursor: not-allowed;
+}
+
+.upload-section {
+  position: relative;
+}
+
+/* 添加动画效果 */
+@keyframes progress-animation {
+  0% {
+    background-position: 0 0;
+  }
+  100% {
+    background-position: 30px 0;
+  }
+}
+
+.progress {
+  background-image: linear-gradient(
+    45deg,
+    rgba(255, 255, 255, 0.15) 25%,
+    transparent 25%,
+    transparent 50%,
+    rgba(255, 255, 255, 0.15) 50%,
+    rgba(255, 255, 255, 0.15) 75%,
+    transparent 75%,
+    transparent
+  );
+  background-size: 30px 30px;
+  animation: progress-animation 1s linear infinite;
+}
+
+/* 添加弹窗样式 */
+.toast-container {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 1000;
+}
+
+.toast {
+  min-width: 300px;
+  max-width: 500px;
+  padding: 12px;
+  border-radius: 6px;
+  background-color: white;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  margin-bottom: 10px;
+  display: flex;
+  align-items: flex-start;
+  animation: slideIn 0.3s ease;
+}
+
+.toast-content {
+  flex: 1;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.toast-icon {
+  font-size: 18px;
+  line-height: 20px;
+}
+
+.toast-message {
+  flex: 1;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.toast-close {
+  background: none;
+  border: none;
+  font-size: 20px;
+  color: #666;
+  cursor: pointer;
+  padding: 0 4px;
+  margin-left: 10px;
+}
+
+.toast.success {
+  border-left: 4px solid #4CAF50;
+}
+
+.toast.success .toast-icon {
+  color: #4CAF50;
+}
+
+.toast.error {
+  border-left: 4px solid #f44336;
+}
+
+.toast.error .toast-icon {
+  color: #f44336;
+}
+
+.toast.info {
+  border-left: 4px solid #2196F3;
+}
+
+.toast.info .toast-icon {
+  color: #2196F3;
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* 修改搜索区块样式 */
+.search-block {
+  width: 100%;
+  border-bottom: 1px solid #ddd;
+  background-color: #fff;
+  display: flex;
+  flex-direction: column;
+  flex: 1; /* 让搜索区块占据剩余空间 */
+  min-height: 0; /* 允许内容区域收缩 */
+}
+
+/* 修改搜索区域样式 */
+.search-section {
+  padding: 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1; /* 占据剩余空间 */
+  min-height: 0; /* 允许内容区域收缩 */
+  overflow: hidden; /* 防止溢出 */
+}
+
+/* 搜索结果区域样式 */
+.results-section {
+  flex: 1;
+  overflow-y: auto;
+  margin-top: 10px;
+  padding: 0 15px;
+  min-height: 100px; /* 设置最小高度 */
+  max-height: calc(100% - 60px); /* 减去搜索框的高度 */
+}
+
+/* 搜索输入框包装器样式 */
+.search-input-wrapper {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  flex-shrink: 0; /* 防止搜索框被压缩 */
+  padding-bottom: 10px;
+  border-bottom: 1px solid #eee;
+}
+
+/* 结果项样式优化 */
+.result-item {
+  background-color: #f8f9fa;
+  border: 1px solid #eee;
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 10px;
+}
+
+/* 确保知识库区域的其他部分不会挤压搜索区域 */
+.upload-block {
+  flex-shrink: 0; /* 防止上传区域被压缩 */
+}
+
+.kb-stats {
+  flex-shrink: 0; /* 防止统计区域被压缩 */
+}
+
+.file-chunks {
+  flex-shrink: 0; /* 防止文件列表区域被压缩 */
+}
+
+/* 修改打字机光标样式 */
+.message.typing p:last-child::after {
+  content: '▋';
+  animation: cursor 0.8s infinite;
 }
 </style>
 
