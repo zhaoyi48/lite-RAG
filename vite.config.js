@@ -15,4 +15,15 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url))
     },
   },
+  optimizeDeps: {
+    include: [
+      'pdfjs-dist',
+      'pdfjs-dist/build/pdf.worker.mjs'
+    ]
+  },
+  build: {
+    commonjsOptions: {
+      include: [/pdfjs-dist/]
+    }
+  }
 })
