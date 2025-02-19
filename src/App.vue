@@ -281,248 +281,7 @@ export default {
       this.files = event.target.files
     },
 
-    // 优化文本分段处理
-    splitIntoChunks(content, filename) {
-      const extension = filename.toLowerCase().slice(filename.lastIndexOf('.') + 1)
-      const config = this.chunkConfig[extension] || this.chunkConfig.txt
-
-      // 预处理文本
-      content = this.preprocessText(content)
-      
-      // 根据文件类型选择分段策略
-      if (extension === 'md') {
-        return this.splitMarkdownContent(content, filename, config)
-      } else {
-        return this.splitTextContent(content, filename, config)
-      }
-    },
-
-    // 文本预处理
-    preprocessText(text) {
-      return text
-        .replace(/\r\n/g, '\n') // 统一换行符
-        .replace(/\n{3,}/g, '\n\n') // 合并多个空行
-        .replace(/\s+/g, ' ') // 合并多个空格
-        .trim()
-    },
-
-    // 处理普通文本文件
-    splitTextContent(content, filename, config) {
-      // 首先按自然段落分割
-      const paragraphs = content.split(/\n\s*\n/)
-      const chunks = []
-      let currentChunk = {
-        title: filename,
-        content: '',
-        length: 0
-      }
-
-      for (const paragraph of paragraphs) {
-        const cleanParagraph = paragraph.trim()
-        if (!cleanParagraph) continue
-
-        // 处理超长段落
-        if (cleanParagraph.length > config.maxSize) {
-          // 如果当前块不为空，先保存
-          if (currentChunk.length >= config.minSize) {
-            chunks.push(this.finalizeChunk(currentChunk, filename, chunks.length))
-            currentChunk = this.initializeChunk(filename)
-          }
-
-          // 分割长段落
-          const sentenceChunks = this.splitLongParagraph(cleanParagraph, config)
-          for (const chunk of sentenceChunks) {
-            chunks.push(this.finalizeChunk({
-              title: filename,
-              content: chunk,
-              length: chunk.length
-            }, filename, chunks.length))
-          }
-          continue
-        }
-
-        // 检查是否需要开始新的块
-        if (currentChunk.length + cleanParagraph.length > config.maxSize) {
-          if (currentChunk.length >= config.minSize) {
-            chunks.push(this.finalizeChunk(currentChunk, filename, chunks.length))
-            // 使用重叠内容开始新的块
-            currentChunk = this.initializeChunk(filename, this.getOverlappingContent(currentChunk.content, config.overlap))
-          }
-        }
-
-        // 添加段落到当前块
-        if (currentChunk.content) {
-          currentChunk.content += '\n\n'
-          currentChunk.length += 2
-        }
-        currentChunk.content += cleanParagraph
-        currentChunk.length += cleanParagraph.length
-      }
-
-      // 保存最后一个块
-      if (currentChunk.length >= config.minSize) {
-        chunks.push(this.finalizeChunk(currentChunk, filename, chunks.length))
-      }
-
-      return chunks
-    },
-
-    // 处理 Markdown 文件
-    splitMarkdownContent(content, filename, config) {
-      const sections = this.parseMdSections(content)
-      const chunks = []
-      let currentSection = null
-
-      for (const section of sections) {
-        const sectionConfig = {
-          ...config,
-          maxSize: config.headingLevels[`h${section.level}`] || config.maxSize
-        }
-
-        // 处理每个章节
-        const sectionChunks = this.splitTextContent(
-          section.content,
-          filename,
-          sectionConfig
-        )
-
-        // 为每个块添加标题信息
-        sectionChunks.forEach(chunk => {
-          chunk.metadata = {
-            ...chunk.metadata,
-            heading: section.heading,
-            level: section.level
-          }
-          chunk.source = `${filename} - ${section.heading} (片段 ${chunks.length + 1})`
-        })
-
-        chunks.push(...sectionChunks)
-      }
-
-      return chunks
-    },
-
-    // 分割长段落
-    splitLongParagraph(paragraph, config) {
-      const sentences = paragraph.match(/[^.!?]+[.!?]+/g) || [paragraph]
-      const chunks = []
-      let currentChunk = ''
-
-      for (const sentence of sentences) {
-        if (currentChunk.length + sentence.length > config.maxSize) {
-          if (currentChunk.length >= config.minSize) {
-            chunks.push(currentChunk.trim())
-            currentChunk = this.getOverlappingContent(currentChunk, config.overlap)
-          }
-        }
-        currentChunk += sentence + ' '
-      }
-
-      if (currentChunk.length >= config.minSize) {
-        chunks.push(currentChunk.trim())
-      }
-
-      return chunks
-    },
-
-    // 获取重叠内容
-    getOverlappingContent(text, overlapSize) {
-      const sentences = text.match(/[^.!?]+[.!?]+/g) || []
-      let overlap = ''
-      let currentLength = 0
-
-      for (let i = sentences.length - 1; i >= 0; i--) {
-        const sentence = sentences[i]
-        if (currentLength + sentence.length > overlapSize) break
-        overlap = sentence + overlap
-        currentLength += sentence.length
-      }
-
-      return overlap.trim()
-    },
-
-    // 初始化新的块
-    initializeChunk(filename, initialContent = '') {
-      return {
-        title: filename,
-        content: initialContent,
-        length: initialContent.length,
-        metadata: {}
-      }
-    },
-
-    // 完成块的处理
-    finalizeChunk(chunk, filename, index) {
-      return {
-        ...chunk,
-        source: chunk.metadata?.heading 
-          ? `${filename} - ${chunk.metadata.heading} (片段 ${index + 1})`
-          : `${filename} (片段 ${index + 1})`,
-        fileType: filename.split('.').pop().toLowerCase()
-      }
-    },
-
-    // 修改切换文件展开状态的方法
-    toggleFileExpand(fileName) {
-      this.expandedFiles.set(fileName, !this.expandedFiles.get(fileName))
-      // 强制更新视图
-      this.expandedFiles = new Map(this.expandedFiles)
-    },
-
-    // 添加文件类型检查
-    isValidFileType(file) {
-      const validExtensions = ['.txt', '.md']
-      const extension = file.name.toLowerCase().slice(file.name.lastIndexOf('.'))
-      return validExtensions.includes(extension)
-    },
-
-    // 处理 Markdown 文件
-    processMdContent(content, filename) {
-      // 移除 YAML front matter
-      content = content.replace(/^---[\s\S]*?---/, '')
-
-      // 处理标题层级
-      const lines = content.split('\n')
-      const processedLines = []
-      let currentSection = ''
-      let inCodeBlock = false
-
-      for (let line of lines) {
-        // 处理代码块
-        if (line.startsWith('```')) {
-          inCodeBlock = !inCodeBlock
-          continue
-        }
-        if (inCodeBlock) continue
-
-        // 处理标题
-        if (line.startsWith('#')) {
-          const level = line.match(/^#+/)[0].length
-          const title = line.replace(/^#+\s*/, '').trim()
-          if (level === 1) {
-            currentSection = title
-          }
-          processedLines.push(title)
-          continue
-        }
-
-        // 移除 Markdown 语法
-        line = line
-          .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // 链接
-          .replace(/[*_]{1,2}([^*_]+)[*_]{1,2}/g, '$1') // 粗体和斜体
-          .replace(/`([^`]+)`/g, '$1') // 行内代码
-          .replace(/^\s*[-*+]\s+/g, '') // 列表标记
-          .replace(/^\s*\d+\.\s+/g, '') // 有序列表标记
-
-        if (line.trim()) {
-          processedLines.push(line)
-        }
-      }
-
-      return processedLines.join('\n')
-    },
-
-    // 修改文件上传处理
+    // 修改文件上传处理方法
     async uploadFiles() {
       try {
         const totalFiles = this.files.length
@@ -554,15 +313,18 @@ export default {
           
           const reader = new FileReader()
           reader.onload = async (e) => {
-            let content = e.target.result
+            const content = e.target.result
+            let chunks = []
             
             // 根据文件类型处理内容
             const extension = file.name.toLowerCase().slice(file.name.lastIndexOf('.'))
             if (extension === '.md') {
-              content = this.processMdContent(content, file.name)
+              // 直接使用 splitMarkdownContent 处理 Markdown 文件
+              chunks = this.splitMarkdownContent(content, file.name, this.chunkConfig.md)
+            } else {
+              chunks = this.splitIntoChunks(content, file.name)
             }
 
-            const chunks = this.splitIntoChunks(content, file.name)
             this.uploadStatus.totalChunks = chunks.length
             this.uploadStatus.currentChunk = 0
             
@@ -570,10 +332,7 @@ export default {
               this.uploadStatus.currentChunk++
               const vector = await this.getEmbedding(chunk.content, this.indexModel)
               this.vectors.push({
-                title: chunk.title,
-                content: chunk.content,
-                source: chunk.source,
-                fileType: extension.slice(1),
+                ...chunk,
                 vector: vector
               })
 
@@ -1017,6 +776,273 @@ ${context}
         .replace(/^\s*>\s+/gm, '') // 移除引用标记
         .replace(/\n{3,}/g, '\n\n') // 合并多个空行
         .trim()
+    },
+
+    // 修改文件分割入口方法
+    splitIntoChunks(content, filename) {
+      const extension = filename.toLowerCase().slice(filename.lastIndexOf('.') + 1)
+      const config = this.chunkConfig[extension] || this.chunkConfig.txt
+
+      // 预处理文本
+      content = this.preprocessText(content)
+      
+      // 根据文件类型选择分段策略
+      if (extension === 'md') {
+        return this.splitMarkdownContent(content, filename, config)
+      } else {
+        // 直接使用 splitTextContent 处理普通文本
+        return this.splitTextContent(content, filename, config)
+      }
+    },
+
+    // 优化文本分割方法
+    splitTextContent(content, filename, config) {
+      // 首先按自然段落分割
+      const paragraphs = content.split(/\n\s*\n/).filter(p => p.trim())
+      const chunks = []
+      let currentChunk = {
+        title: filename,
+        content: '',
+        length: 0,
+        metadata: {
+          sectionIndex: 0
+        }
+      }
+
+      for (let i = 0; i < paragraphs.length; i++) {
+        const paragraph = paragraphs[i].trim()
+        if (!paragraph) continue
+
+        // 处理超长段落
+        if (paragraph.length > config.maxSize) {
+          // 如果当前块不为空，先保存
+          if (currentChunk.length >= config.minSize) {
+            chunks.push(this.finalizeChunk(currentChunk, filename, chunks.length))
+            currentChunk = {
+              title: filename,
+              content: '',
+              length: 0,
+              metadata: {
+                sectionIndex: 0
+              }
+            }
+          }
+
+          // 分割长段落
+          const sentences = paragraph.match(/[^.!?。！？]+[.!?。！？]+/g) || [paragraph]
+          let sentenceChunk = ''
+
+          for (const sentence of sentences) {
+            if (sentenceChunk.length + sentence.length > config.maxSize) {
+              if (sentenceChunk.length >= config.minSize) {
+                chunks.push(this.finalizeChunk({
+                  title: filename,
+                  content: sentenceChunk.trim(),
+                  length: sentenceChunk.length,
+                  metadata: {
+                    sectionIndex: 0
+                  }
+                }, filename, chunks.length))
+                sentenceChunk = ''
+              }
+            }
+            sentenceChunk += sentence + ' '
+          }
+
+          // 保存剩余的句子
+          if (sentenceChunk.length >= config.minSize) {
+            chunks.push(this.finalizeChunk({
+              title: filename,
+              content: sentenceChunk.trim(),
+              length: sentenceChunk.length,
+              metadata: {
+                sectionIndex: 0
+              }
+            }, filename, chunks.length))
+          }
+          continue
+        }
+
+        // 检查是否需要开始新的块
+        if (currentChunk.length + paragraph.length > config.maxSize) {
+          if (currentChunk.length >= config.minSize) {
+            chunks.push(this.finalizeChunk(currentChunk, filename, chunks.length))
+            // 创建新块，包含重叠内容
+            const overlap = this.getLastSentences(currentChunk.content, config.overlap)
+            currentChunk = {
+              title: filename,
+              content: overlap,
+              length: overlap.length,
+              metadata: {
+                sectionIndex: 0
+              }
+            }
+          }
+        }
+
+        // 添加段落到当前块
+        if (currentChunk.content) {
+          currentChunk.content += '\n\n'
+          currentChunk.length += 2
+        }
+        currentChunk.content += paragraph
+        currentChunk.length += paragraph.length
+      }
+
+      // 保存最后一个块
+      if (currentChunk.length >= config.minSize) {
+        chunks.push(this.finalizeChunk(currentChunk, filename, chunks.length))
+      }
+
+      // 如果没有生成任何块，创建一个包含整个文档的块
+      if (chunks.length === 0 && content.trim()) {
+        chunks.push(this.finalizeChunk({
+          title: filename,
+          content: content.trim(),
+          length: content.trim().length,
+          metadata: {
+            sectionIndex: 0
+          }
+        }, filename, 0))
+      }
+
+      return chunks
+    },
+
+    // 获取最后几个句子作为重叠内容
+    getLastSentences(text, targetLength) {
+      const sentences = text.match(/[^.!?。！？]+[.!?。！？]+/g) || []
+      let result = ''
+      
+      for (let i = sentences.length - 1; i >= 0; i--) {
+        const sentence = sentences[i]
+        if (result.length + sentence.length > targetLength) {
+          break
+        }
+        result = sentence + (result ? ' ' : '') + result
+      }
+      
+      return result.trim()
+    },
+
+    // 添加文件类型检查方法
+    isValidFileType(file) {
+      const validExtensions = ['.txt', '.md']
+      const extension = file.name.toLowerCase().slice(file.name.lastIndexOf('.'))
+      return validExtensions.includes(extension)
+    },
+
+    // 添加文本预处理方法
+    preprocessText(text) {
+      return text
+        .replace(/\r\n/g, '\n') // 统一换行符
+        .replace(/\n{3,}/g, '\n\n') // 合并多个空行
+        .replace(/\s+/g, ' ') // 合并多个空格
+        .trim()
+    },
+
+    // 添加块完成处理方法
+    finalizeChunk(chunk, filename, index) {
+      return {
+        ...chunk,
+        source: `${filename} (片段 ${index + 1})`,
+        fileType: filename.split('.').pop().toLowerCase()
+      }
+    },
+
+    // 添加 Markdown 文档分割方法
+    splitMarkdownContent(content, filename, config) {
+      // 解析文档结构
+      const sections = this.parseMdSections(content)
+      const chunks = []
+
+      // 处理每个章节
+      sections.forEach((section, sectionIndex) => {
+        // 根据标题级别调整块大小
+        const sectionConfig = {
+          ...config,
+          maxSize: config.headingLevels[`h${section.level}`] || config.maxSize
+        }
+
+        // 分割章节内容
+        const paragraphs = section.content.split(/\n\s*\n/).filter(p => p.trim())
+        let currentChunk = {
+          title: filename,
+          content: section.heading ? `# ${section.heading}\n\n` : '', // 在每个块的开始添加标题
+          length: section.heading ? section.heading.length + 3 : 0,
+          metadata: {
+            heading: section.heading,
+            level: section.level,
+            sectionIndex
+          }
+        }
+
+        // 处理段落
+        for (const paragraph of paragraphs) {
+          const cleanParagraph = paragraph.trim()
+          if (!cleanParagraph) continue
+
+          // 检查是否需要开始新的块
+          if (currentChunk.length + cleanParagraph.length > sectionConfig.maxSize) {
+            if (currentChunk.length >= sectionConfig.minSize) {
+              chunks.push(this.finalizeChunk(currentChunk, filename, chunks.length))
+              // 创建新块，保持标题信息
+              currentChunk = {
+                title: filename,
+                content: section.heading ? `# ${section.heading}\n\n` : '',
+                length: section.heading ? section.heading.length + 3 : 0,
+                metadata: {
+                  heading: section.heading,
+                  level: section.level,
+                  sectionIndex
+                }
+              }
+            }
+          }
+
+          // 添加段落到当前块
+          if (currentChunk.content) {
+            currentChunk.content += '\n\n'
+            currentChunk.length += 2
+          }
+          currentChunk.content += cleanParagraph
+          currentChunk.length += cleanParagraph.length
+        }
+
+        // 保存最后一个块
+        if (currentChunk.length >= sectionConfig.minSize) {
+          chunks.push(this.finalizeChunk(currentChunk, filename, chunks.length))
+        }
+      })
+
+      // 如果没有生成任何块，创建一个包含整个文档的块
+      if (chunks.length === 0 && content.trim()) {
+        chunks.push(this.finalizeChunk({
+          title: filename,
+          content: content.trim(),
+          length: content.trim().length,
+          metadata: {
+            heading: '文档内容',
+            level: 1,
+            sectionIndex: 0
+          }
+        }, filename, 0))
+      }
+
+      return chunks
+    },
+
+    // 添加文件展开/折叠切换方法
+    toggleFileExpand(fileName) {
+      // 使用 Map 的 set 方法设置状态
+      this.expandedFiles.set(fileName, !this.expandedFiles.get(fileName))
+      // 强制更新视图
+      this.expandedFiles = new Map(this.expandedFiles)
+    },
+
+    // 添加文件展开状态检查方法
+    isFileExpanded(fileName) {
+      return this.expandedFiles.get(fileName) || false
     }
   }
 }
