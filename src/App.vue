@@ -2,7 +2,7 @@
   <div class="knowledge-base">
     <div class="settings-section">
       <div class="setting-item">
-        <label>Ollama 服务地址：</label>
+        <label>Ollama 服务地址（需要跨域支持OLLAMA_ORIGINS=*）：</label>
         <input 
           type="text" 
           v-model="ollamaEndpoint"
