@@ -1,5 +1,6 @@
 import * as pdfjsLib from 'pdfjs-dist'
-import mammoth from 'mammoth'
+import * as mammoth from 'mammoth/mammoth.browser.js';
+
 import * as XLSX from 'xlsx'
 
 // PDF Worker 配置
