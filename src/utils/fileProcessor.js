@@ -1,5 +1,5 @@
 import * as pdfjsLib from 'pdfjs-dist'
-import mammoth from 'mammoth/mammoth.browser'
+import * as mammoth from 'mammoth/mammoth.browser.js'
 import * as XLSX from 'xlsx'
 
 // PDF Worker 配置
@@ -145,6 +145,7 @@ async function extractWordContent(file) {
     const arrayBuffer = await file.arrayBuffer()
     const result = await mammoth.convertToHtml({ arrayBuffer })
     
+    // 移除 HTML 标签，只保留文本内容
     const tempDiv = document.createElement('div')
     tempDiv.innerHTML = result.value
     return tempDiv.textContent || tempDiv.innerText || ''
