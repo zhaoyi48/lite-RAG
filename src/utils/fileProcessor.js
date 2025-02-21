@@ -1,4 +1,5 @@
 import * as pdfjsLib from 'pdfjs-dist'
+import { renderAsync } from 'docx-preview'
 import * as mammoth from 'mammoth/mammoth.browser.js'
 import * as XLSX from 'xlsx'
 
@@ -143,12 +144,31 @@ async function extractPdfContent(file) {
 async function extractWordContent(file) {
   try {
     const arrayBuffer = await file.arrayBuffer()
-    const result = await mammoth.convertToHtml({ arrayBuffer })
     
-    // 移除 HTML 标签，只保留文本内容
-    const tempDiv = document.createElement('div')
-    tempDiv.innerHTML = result.value
-    return tempDiv.textContent || tempDiv.innerText || ''
+    // 创建一个临时容器
+    const container = document.createElement('div')
+    container.style.position = 'absolute'
+    container.style.left = '-9999px'
+    document.body.appendChild(container)
+    
+    // 渲染文档
+    await renderAsync(arrayBuffer, container, container, {
+      inWrapper: false,
+      ignoreWidth: true,
+      ignoreHeight: true
+    })
+    
+    // 提取文本内容
+    const textContent = container.textContent || container.innerText || ''
+    
+    // 清理临时容器
+    document.body.removeChild(container)
+    
+    // 返回处理后的文本
+    return textContent
+      .replace(/\s+/g, ' ')  // 合并多个空白字符
+      .trim()
+    
   } catch (error) {
     console.error('处理 Word 文档失败:', error)
     throw new Error(`处理 Word 文档失败: ${error.message}`)

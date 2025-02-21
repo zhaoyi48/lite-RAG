@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@llm-tools/embedjs": "^0.1.28",
+    "docx-preview": "^0.3.4",
     "dompurify": "^3.2.4",
     "mammoth": "^1.9.0",
     "marked": "^15.0.7",
