@@ -97,7 +97,10 @@ async function getRelevantContext(query, vectors, endpoint) {
 async function getEmbedding(text, endpoint) {
   const response = await fetch(`${endpoint}/api/embeddings`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 
+      'Content-Type': 'application/json',
+      'Access-Control-Request-Private-Network': 'true'
+    },
     body: JSON.stringify({
       model: 'nomic-embed-text',
       prompt: text

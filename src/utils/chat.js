@@ -2,7 +2,10 @@
 export async function streamChat({ endpoint, model, messages, onChunk }) {
   const response = await fetch(`${endpoint}/api/chat`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 
+      'Content-Type': 'application/json',
+      'Access-Control-Request-Private-Network': 'true'
+    },
     body: JSON.stringify({
       model: model,
       messages: messages,

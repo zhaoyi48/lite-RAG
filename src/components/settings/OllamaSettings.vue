@@ -1,7 +1,7 @@
 <template>
   <div class="settings-section">
     <div class="setting-item">
-      <label>Ollama 服务地址（需要跨域支持OLLAMA_ORIGINS=*）：</label>
+      <label>Ollama 服务地址（需要跨域支持OLLAMA_ORIGINS=*/OLLAMA_HEADERS="Access-Control-Allow-Private-Network: true"）：</label>
       <input 
         type="text" 
         v-model="localEndpoint"
@@ -31,7 +31,11 @@ export default {
   methods: {
     async testConnection() {
       try {
-        const response = await fetch(`${this.localEndpoint}/api/tags`)
+        const response = await fetch(`${this.localEndpoint}/api/tags`, {
+          headers: {
+            'Access-Control-Request-Private-Network': 'true'
+          }
+        })
         if (response.ok) {
           const data = await response.json()
           this.$emit('models-updated', data.models)
