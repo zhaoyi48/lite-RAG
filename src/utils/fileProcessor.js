@@ -1,6 +1,5 @@
 import * as pdfjsLib from 'pdfjs-dist'
-import * as mammoth from 'mammoth/mammoth.browser.js';
-
+import mammoth from 'mammoth/mammoth.browser'
 import * as XLSX from 'xlsx'
 
 // PDF Worker 配置
@@ -142,9 +141,17 @@ async function extractPdfContent(file) {
 
 // 提取 Word 文档内容
 async function extractWordContent(file) {
-  const arrayBuffer = await file.arrayBuffer()
-  const result = await mammoth.extractRawText({ arrayBuffer })
-  return result.value
+  try {
+    const arrayBuffer = await file.arrayBuffer()
+    const result = await mammoth.convertToHtml({ arrayBuffer })
+    
+    const tempDiv = document.createElement('div')
+    tempDiv.innerHTML = result.value
+    return tempDiv.textContent || tempDiv.innerText || ''
+  } catch (error) {
+    console.error('处理 Word 文档失败:', error)
+    throw new Error(`处理 Word 文档失败: ${error.message}`)
+  }
 }
 
 // 提取 Excel 内容
